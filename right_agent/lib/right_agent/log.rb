@@ -142,6 +142,7 @@ module RightScale
     # === Return
     # (Object):: Result from first registered logger
     def warning(description, exception = nil, backtrace = :caller)
+      init unless @initialized
       @logger.warn(format(description, exception, backtrace))
     end
 
@@ -158,6 +159,7 @@ module RightScale
     # === Return
     # (Object):: Result from first registered logger
     def error(description, exception = nil, backtrace = :caller)
+      init unless @initialized
       @logger.error(format(description, exception, backtrace))
     end
 
@@ -378,13 +380,13 @@ module RightScale
           else
             file = STDOUT
           end
-          puts "Logging to #{file}" if opts[:print]
+          $stderr.puts "Logging to #{file}" if opts[:print]
           logger = Logger.new(file)
           logger.formatter = Formatter.new
           logger.progname = @program_name || identity || 'RightAgent'
           logger.formatter.datetime_format = "%b %d %H:%M:%S"
         else
-          puts "Logging to syslog" if opts[:print]
+          $stderr.puts "Logging to syslog" if opts[:print]
           logger = RightSupport::SystemLogger.new(@program_name || identity || 'RightAgent')
         end
 

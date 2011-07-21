@@ -83,9 +83,9 @@ module RightScale
     # === Parameters
     # opts(Hash):: Configuration options:
     #   :identity(String):: Identity of this agent, no default
+    #   :agent_name(String):: Local name for this agent
     #   :root_dir(String):: Application root for this agent containing subdirectories actors, certs, and init,
     #     defaults to current working directory
-    #   :cfg_file(String):: Path to this agent's configuration file
     #   :pid_dir(String):: Path to the directory where the agent stores its process id file (only if daemonized),
     #     defaults to the current working directory
     #   :log_dir(String):: Log directory path, defaults to the platform specific log directory
@@ -182,7 +182,7 @@ module RightScale
         @all_setup.each { |s| @remaining_setup[s] = @broker.all }
         @broker.connection_status(:one_off => @options[:connect_timeout]) do |status|
           if status == :connected
-            # need to give EM (on Windows) a chance to respond to the AMQP handshake
+            # Need to give EM (on Windows) a chance to respond to the AMQP handshake
             # before doing anything interesting to prevent AMQP handshake from
             # timing-out; delay post-connected activity a second.
             EM.add_timer(1) do
@@ -203,7 +203,7 @@ module RightScale
                 @check_status_count = 0
                 @check_status_brokers = @broker.all
                 EM.next_tick { @options[:ready_callback].call } if @options[:ready_callback]
-                EM.add_periodic_timer(interval) { check_status }
+                @check_status_timer = EM::PeriodicTimer.new(interval) { check_status }
               rescue Exception => e
                 Log.error("Agent failed startup", e, :trace) unless e.message == "exit"
                 EM.stop
@@ -216,6 +216,8 @@ module RightScale
         end
       rescue SystemExit => e
         raise e
+      rescue PidFile::AlreadyRunning
+        raise
       rescue Exception => e
         Log.error("Agent failed startup", e, :trace) unless e.message == "exit"
         raise e
@@ -414,34 +416,41 @@ module RightScale
           if blk then blk.call else EM.stop end
         else
           @terminating = true
+          @check_status_timer.cancel if @check_status_timer
+          @check_status_timer = nil
           timeout = @options[:grace_timeout]
           Log.info("[stop] Agent #{@identity} terminating")
+
           stop_gracefully(timeout) do
             if @sender
               dispatch_age = @dispatcher.dispatch_age
               request_count, request_age = @sender.terminate
+
+              finish = lambda do
+                request_count, request_age = @sender.terminate
+                Log.info("[stop] The following #{request_count} requests initiated as recently as #{request_age} " +
+                         "seconds ago are being dropped:\n  " + @sender.dump_requests.join("\n  ")) if request_age
+                @broker.close(&blk)
+                EM.stop unless blk
+              end
+
               wait_time = [timeout - (request_age || timeout), timeout - (dispatch_age || timeout), 0].max
-              if wait_time > 0
+              if wait_time == 0
+                finish.call
+              else
                 reason = ""
                 reason = "completion of #{request_count} requests initiated as recently as #{request_age} seconds ago" if request_age
                 reason += " and " if request_age && dispatch_age
                 reason += "requests received as recently as #{dispatch_age} seconds ago" if dispatch_age
                 Log.info("[stop] Termination waiting #{wait_time} seconds for #{reason}")
-              end
-              @termination_timer = EM::Timer.new(wait_time) do
-                begin
-                  Log.info("[stop] Continuing with termination") if wait_time > 0
-                  request_count, request_age = @sender.terminate
-                  if request_age
-                    request_dump = @sender.dump_requests.join("\n  ")
-                    Log.info("[stop] The following #{request_count} requests initiated as recently as #{request_age} " +
-                             "seconds ago are being dropped:\n  #{request_dump}")
+                @termination_timer = EM::Timer.new(wait_time) do
+                  begin
+                    Log.info("[stop] Continuing with termination")
+                    finish.call
+                  rescue Exception => e
+                    Log.error("Failed while finishing termination", e, :trace)
+                    EM.stop
                   end
-                  @broker.close(&blk)
-                  EM.stop unless blk
-                rescue Exception => e
-                  Log.error("Failed while finishing termination", e, :trace)
-                  EM.stop
                 end
               end
             end
@@ -465,7 +474,8 @@ module RightScale
     def stats(options = {})
       now = Time.now
       reset = options[:reset]
-      result = OperationResult.success("identity"        => @identity,
+      result = OperationResult.success("name"            => @agent_name,
+                                       "identity"        => @identity,
                                        "hostname"        => Socket.gethostname,
                                        "version"         => AgentConfig.protocol_version,
                                        "brokers"         => @broker.stats(reset),
@@ -541,6 +551,7 @@ module RightScale
       @identity = @options[:identity]
       parsed_identity = AgentIdentity.parse(@identity)
       @agent_type = parsed_identity.agent_type
+      @agent_name = @options[:agent_name]
       @stats_routing_key = "stats.#{@agent_type}.#{parsed_identity.base_id}"
 
       @remaining_setup = {}
@@ -557,16 +568,16 @@ module RightScale
     # === Return
     # (Boolean):: true if successful, otherwise false
     def update_configuration(opts)
-      res = false
-      cfg_file = @options[:cfg_file] || AgentConfig.cfg_file(@agent_type)
-      if File.exists?(cfg_file) && cfg = YAML.load(IO.read(cfg_file))
+      if cfg = AgentConfig.load_cfg(@agent_name)
         opts.each { |k, v| cfg[k] = v if cfg.has_key?(k) }
-        File.open(cfg_file, 'w') { |fd| fd.write(YAML.dump(cfg)) }
-        res = true
+        AgentConfig.store_cfg(@agent_name, cfg)
+        true
+      else
+        Log.error("Could not access configuration file #{AgentConfig.cfg_file(@agent_name).inspect} for update")
+        false
       end
-      res
     rescue Exception => e
-      Log.error("Failed updating configuration file #{cfg_file}", e, :trace)
+      Log.error("Failed updating configuration file #{AgentConfig.cfg_file(@agent_name).inspect}", e, :trace)
       false
     end
 
@@ -592,6 +603,7 @@ module RightScale
 
       # Perform agent-specific initialization including actor creation and registration
       if init_file = AgentConfig.init_file
+        Log.info("[setup] initializing agent from #{init_file}")
         instance_eval(File.read(init_file), init_file)
       else
         Log.error("No agent init.rb file found in init directory of #{AgentConfig.root_dir.inspect}")

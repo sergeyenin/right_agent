@@ -19,7 +19,11 @@
 #     rnac --killall
 #     rnac -K
 #
-#   List running agents on local machine:
+#   List agents configured on local machine:
+#     rnac --list
+#     rnac -l
+#
+#   List status of agents configured on local machine:
 #     rnac --status
 #     rnac -U
 #
@@ -27,37 +31,48 @@
 #     rnac --start AGENT --foreground
 #     rnac -s AGENT -f
 #
+#   Start new agent named AGENT of type TYPE:
+#     rnac --start AGENT --type TYPE
+#     rnac -s AGENT -t TYPE
+#
+#   Note: To start multiple agents of the same type generate one
+#         config.yml file with rad and then start each agent with rnac:
+#         rad my_agent
+#         rnac -s my_agent_1 -t my_agent
+#         rnac -s my_agent_2 -t my_agent
+#
 # === Usage:
 #    rnac [options]
 #
 #    options:
-#      --start, -s AGENT    Start agent named AGENT
-#      --stop, -p AGENT     Stop agent named AGENT
-#      --stop-agent ID      Stop agent with serialized identity ID
-#      --kill, -k PIDFILE   Kill process with given process id file
-#      --killall, -K        Stop all running agents
-#      --decommission, -d   Send decommission signal to agent
-#      --shutdown, -S       Send a terminate request to agent
-#      --status, -U         List running agents on local machine
-#      --identity, -i ID    Use base id ID to build agent's identity
-#      --token, -t TOKEN    Use token TOKEN to build agent's identity
-#      --prefix, -x PREFIX  Use prefix PREFIX to build agent's identity
-#      --type TYPE          Use agent type TYPE to build agent's' identity,
-#                           defaults to AGENT with any trailing '_[0-9]+' removed
-#      --list, -l           List all configured agents
-#      --user, -u USER      Set AMQP user
-#      --pass, -p PASS      Set AMQP password
-#      --vhost, -v VHOST    Set AMQP vhost
-#      --host, -h HOST      Set AMQP server hostname
-#      --port, -P PORT      Set AMQP server port
-#      --cfg-dir, -c DIR    Set directory containing configuration for all agents
-#      --pid-dir, -z DIR    Set directory containing agent process id files
-#      --log-dir DIR        Set log directory
-#      --log-level LVL      Log level (debug, info, warning, error or fatal)
-#      --foreground, -f     Run agent in foreground
-#      --interactive, -I    Spawn an irb console after starting agent
-#      --test               Use test settings
-#      --help               Display help
+#      --start, -s AGENT      Start agent named AGENT
+#      --stop, -p AGENT       Stop agent named AGENT
+#      --stop-agent ID        Stop agent with serialized identity ID
+#      --kill, -k PIDFILE     Kill process with given process id file
+#      --killall, -K          Stop all running agents
+#      --decommission, -d     Send decommission signal to instance agent
+#      --shutdown, -S [AGENT] Send a terminate request to agent named AGENT,
+#                             defaults to 'instance'
+#      --status, -U           List running agents on local machine
+#      --identity, -i ID      Use base id ID to build agent's identity
+#      --token, -t TOKEN      Use token TOKEN to build agent's identity
+#      --prefix, -x PREFIX    Use prefix PREFIX to build agent's identity
+#      --type TYPE            Use agent type TYPE to build agent's' identity,
+#                             defaults to AGENT with any trailing '_[0-9]+' removed
+#      --list, -l             List all configured agents
+#      --user, -u USER        Set AMQP user
+#      --pass, -p PASS        Set AMQP password
+#      --vhost, -v VHOST      Set AMQP vhost
+#      --host, -h HOST        Set AMQP server hostname
+#      --port, -P PORT        Set AMQP server port
+#      --cfg-dir, -c DIR      Set directory containing configuration for all agents
+#      --pid-dir, -z DIR      Set directory containing agent process id files
+#      --log-dir DIR          Set log directory
+#      --log-level LVL        Log level (debug, info, warning, error or fatal)
+#      --foreground, -f       Run agent in foreground
+#      --interactive, -I      Spawn an irb console after starting agent
+#      --test                 Use test settings
+#      --help                 Display help
 
 require 'optparse'
 require 'yaml'
@@ -119,17 +134,20 @@ module RightScale
         fail("Missing or invalid pid file #{options[:pid_file]}", print_usage = true)
       end
       if options[:agent_name]
-        cfg_file = AgentConfig.cfg_file(options[:agent_name])
-        fail("Deployment is missing configuration file #{cfg_file.inspect}.") unless File.exists?(cfg_file)
-        cfg = SerializationHelper.symbolize_keys(YAML.load(IO.read(cfg_file)))
+        if action == 'start'
+          cfg = configure_agent(action, options)
+        else
+          cfg = AgentConfig.load_cfg(options[:agent_name])
+          fail("Deployment is missing configuration file #{AgentConfig.cfg_file(options[:agent_name]).inspect}.") unless cfg
+        end
+        options.delete(:identity)
         options = cfg.merge(options)
-        options[:cfg_file] = cfg_file
         AgentConfig.root_dir = options[:root_dir]
         AgentConfig.pid_dir = options[:pid_dir]
         Log.program_name = syslog_program_name(options)
         Log.log_to_file_only(options[:log_to_file_only])
         configure_proxy(options[:http_proxy], options[:http_no_proxy]) if options[:http_proxy]
-      end 
+      end
       @options = DEFAULT_OPTIONS.clone.merge(options.merge(FORCED_OPTIONS))
       FileUtils.mkdir_p(@options[:pid_dir]) unless @options[:pid_dir].nil? || File.directory?(@options[:pid_dir])
 
@@ -161,7 +179,7 @@ module RightScale
         parse_other_args(opts, options)
 
         opts.on("-s", "--start AGENT") do |a|
-          options[:action] = 'run'
+          options[:action] = 'start'
           options[:agent_name] = a
         end
 
@@ -187,6 +205,11 @@ module RightScale
         opts.on("-d", "--decommission") do
           options[:action] = 'decommission'
           options[:agent_name] = 'instance'
+        end
+
+        opts.on("-S", "--shutdown [AGENT]") do |a|
+          options[:action] = 'shutdown'
+          options[:agent_name] = a || 'instance'
         end
 
         opts.on("-U", "--status") do
@@ -224,10 +247,6 @@ module RightScale
 
         opts.on("-I", "--interactive") do
           options[:console] = true
-        end
-
-        opts.on("-S", "--shutdown") do
-          options[:action] = 'shutdown'
         end
 
         opts.on_tail("--help") do
@@ -273,7 +292,7 @@ module RightScale
       # Setup the environment from config if necessary
       begin
         case action
-          when 'run'          then start_agent
+          when 'start'        then start_agent
           when 'stop'         then stop_agent(agent_name)
           when 'show'         then show_agent(agent_name)
           when 'decommission' then run_command('Decommissioning...', 'decommission')
@@ -347,30 +366,27 @@ module RightScale
     # === Return
     # true:: Always return true
     def start_agent(agent = Agent)
-      begin
-        # Register exception handler
-        @options[:exception_callback] = lambda { |e, msg, _| AgentManager.process_exception(e, msg) }
+      puts "#{human_readable_name} being started"
 
-        # Override default status proc for windows instance since "uptime" is not available.
-        @options[:status_proc] = lambda { 1 } if Platform.windows?
+      EM.error_handler do |e|
+        msg = "EM block execution failed with exception: #{e}"
+        Log.error(msg + "\n" + e.backtrace.join("\n"))
+        Log.error("\n\n===== Exiting due to EM block exception =====\n\n")
+        EM.stop
+      end
 
-        puts "#{human_readable_name} being started"
-
-        EM.error_handler do |e|
-          msg = "EM block execution failed with exception: #{e}"
-          Log.error(msg + "\n" + e.backtrace.join("\n"))
-          Log.error("\n\n===== Exiting due to EM block exception =====\n\n")
+      EM.run do
+        begin
+          @@agent = agent.start(@options)
+        rescue SystemExit
+          raise # Let parents of forked (daemonized) processes die
+        rescue PidFile::AlreadyRunning
+          puts "#{human_readable_name} already running"
+          EM.stop
+        rescue Exception => e
+          puts "#{human_readable_name} failed with: #{e} in \n#{e.backtrace.join("\n")}"
           EM.stop
         end
-
-        EM.run do
-          @@agent = agent.start(@options)
-        end
-
-      rescue SystemExit
-        raise # Let parents of forked (daemonized) processes die
-      rescue Exception => e
-        puts "#{human_readable_name} failed with: #{e} in \n#{e.backtrace.join("\n")}"
       end
       true
     end
@@ -384,22 +400,23 @@ module RightScale
     # (Boolean):: true if process was stopped, otherwise false
     def stop_agent(agent_name)
       res = false
-      pid_file = AgentConfig.pid_file(agent_name)
-      if pid = pid_file.read_pid[:pid]
+      if pid_file = AgentConfig.pid_file(agent_name)
         name = human_readable_name(agent_name, pid_file.identity)
-        begin
-          Process.kill('TERM', pid)
-          res = true
-          puts "#{name} stopped."
-        rescue Errno::ESRCH
-          puts "#{name} not running."
-        end
-      else
-        if File.file?(pid_file.to_s)
+        if pid = pid_file.read_pid[:pid]
+          begin
+            Process.kill('TERM', pid)
+            res = true
+            puts "#{name} stopped"
+          rescue Errno::ESRCH
+            puts "#{name} not running"
+          end
+        elsif File.file?(pid_file.to_s)
           puts "Invalid pid file '#{pid_file.to_s}' content: #{IO.read(pid_file.to_s)}"
         else
-          puts "Non-existent pid file '#{pid_file.to_s}'"
+          puts "#{name} not running"
         end
+      else
+        puts "Non-existent pid file for #{agent_name}"
       end
       res
     end
@@ -413,11 +430,10 @@ module RightScale
     # (Boolean):: true if process is running, otherwise false
     def show_agent(agent_name)
       res = false
-      pid_file = AgentConfig.pid_file(agent_name)
-      if pid = pid_file.read_pid[:pid]
-        pid = Process.getpgid(pid) rescue -1
+      if (pid_file = AgentConfig.pid_file(agent_name)) && (pid = pid_file.read_pid[:pid])
+        pgid = Process.getpgid(pid) rescue -1
         name = human_readable_name(agent_name, pid_file.identity)
-        if pid != -1
+        if pgid != -1
           psdata = `ps up #{pid}`.split("\n").last.split
           memory = (psdata[5].to_i / 1024)
           puts "#{name} is alive, using #{memory}MB of memory"
@@ -425,6 +441,8 @@ module RightScale
         else
           puts "#{name} is not running but has a stale pid file at #{pid_file}"
         end
+      elsif identity = AgentConfig.agent_options(agent_name)[:identity]
+        puts "#{human_readable_name(agent_name, identity)} is not running"
       end
       res
     end
@@ -462,6 +480,33 @@ module RightScale
     # (String):: Program name
     def syslog_program_name(options)
       'RightAgent'
+    end
+
+    # Determine configuration settings for this agent and persist them if needed
+    # Reuse existing agent identity when possible
+    #
+    # === Parameters
+    # action(String):: Requested action
+    # options(Hash):: Command line options
+    #
+    # === Return
+    # cfg(Hash):: Persisted configuration options
+    def configure_agent(action, options)
+      agent_type = options[:agent_type]
+      agent_name = options[:agent_name]
+      cfg = AgentConfig.load_cfg(agent_type)
+      fail("Deployment is missing configuration file #{AgentConfig.cfg_file(agent_type).inspect}.") unless cfg
+      if agent_name != agent_type
+        base_id = (options[:base_id] || AgentIdentity.parse(cfg[:identity]).base_id.to_s).to_i
+        unless (identity = AgentConfig.agent_options(agent_name)[:identity]) &&
+               AgentIdentity.parse(identity).base_id == base_id
+          identity = AgentIdentity.new(options[:prefix] || 'rs', options[:agent_type], base_id, options[:token]).to_s
+        end
+        cfg.merge!(:identity => identity)
+        cfg_file = AgentConfig.store_cfg(agent_name, cfg)
+        puts "Generated configuration file for #{agent_name} agent: #{cfg_file}"
+      end
+      cfg
     end
 
     # Enable the use of an HTTP proxy for this process and its subprocesses

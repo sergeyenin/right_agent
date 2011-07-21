@@ -20,13 +20,27 @@
 #     rnac --killall
 #     rnac -K
 #
-#   List running agents on local machine:
+#   List agents configured on local machine:
+#     rnac --list
+#     rnac -l
+#
+#   List status of agents configured on local machine:
 #     rnac --status
 #     rnac -U
 #
 #   Start new agent named AGENT in foreground:
 #     rnac --start AGENT --foreground
 #     rnac -s AGENT -f
+#
+#   Start new agent named AGENT of type TYPE:
+#     rnac --start AGENT --type TYPE
+#     rnac -s AGENT -t TYPE
+#
+#   Note: To start multiple agents of the same type generate one
+#         config.yml file with rad and then start each agent with rnac:
+#         rad my_agent
+#         rnac -s my_agent_1 -t my_agent
+#         rnac -s my_agent_2 -t my_agent
 #
 # === Usage:
 #    rnac [options]
@@ -37,7 +51,7 @@
 #      --stop-agent ID      Stop agent with serialized identity ID
 #      --kill, -k PIDFILE   Kill process with given process id file
 #      --killall, -K        Stop all running agents
-#      --shutdown, -S       Send a terminate request to agent
+#      --shutdown, -S AGENT Send a terminate request to agent named AGENT
 #      --status, -U         List running agents on local machine
 #      --identity, -i ID    Use base id ID to build agent's identity
 #      --token, -t TOKEN    Use token TOKEN to build agent's identity
@@ -60,8 +74,8 @@
 #      --debugger, -D PORT  Start a debug server on PORT and immediately break
 #      --help               Display help
 
-require 'right_agent/scripts/agent_controller'
 require File.expand_path(File.join(File.dirname(__FILE__), '..', '..', 'right_infrastructure_agent'))
+require 'right_agent/scripts/agent_controller'
 
 module RightScale
 
@@ -123,9 +137,16 @@ module RightScale
         # Use single thread in agent to avoid having it pull more messages than it can handle
         @options[:single_threaded] = true
 
-        # Start the agent (mapper has special logic)
+        # Start the agent
         if @options[:agent_type] == 'mapper'
-          start_mapper
+          require File.expand_path(File.join(AgentConfig.lib_dir, 'mapper'))
+
+          @options[:exception_callback] = proc do |e, msg, mapper|
+            FaultyAgentsTracker.handle_exception(msg, e, mapper)
+            ExceptionMailer.deliver_notification(:mapper_receive_loop, msg, e)
+          end
+
+          super(Mapper)
         else
           super(InfrastructureAgent)
         end
@@ -134,41 +155,6 @@ module RightScale
         raise e
       rescue Exception => e
         puts "#{human_readable_name} failed with: #{e} in \n#{e.backtrace.join("\n")}"
-      end
-      true
-    end
-
-    # Start mapper
-    #
-    # === Return
-    # true:: Always return true
-    def start_mapper
-      @options = AgentConfig.agent_options(@options[:agent_name]).merge(@options)
-
-      require File.expand_path(File.join(AgentConfig.lib_dir, 'mapper'))
-
-      @options[:exception_callback] = proc do |e, msg, mapper|
-        FaultyAgentsTracker.handle_exception(msg, e, mapper)
-        ExceptionMailer.deliver_notification(:mapper_receive_loop, msg, e)
-      end
-
-      puts "#{human_readable_name} being started"
-
-      EM.error_handler do |e|
-        msg = "EM block execution failed with exception: #{e}"
-        Log.error(msg + "\n" + e.backtrace.join("\n"))
-        Log.error("\n\n===== Exiting due to EM block exception =====\n\n")
-        EM.stop
-      end
-
-      EM.run do
-        begin
-          @@agent = Mapper.start(@options)
-        rescue SystemExit
-          raise # Let parents of forked (daemonized) processes die
-        rescue Exception => e
-          puts "#{human_readable_name} failed with: #{e} in \n#{e.backtrace.join("\n")}"
-        end
       end
       true
     end
