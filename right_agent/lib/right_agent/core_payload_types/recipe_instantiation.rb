@@ -40,20 +40,20 @@ module RightScale
     # (Boolean) Whether recipe inputs are ready
     attr_accessor :ready
 
-    # (Array of CredentialLocation) attributes that must be resolved by the instance
-    attr_accessor :external_attributes
+    # (Array of SecureDocumentLocation) attributes that must be resolved by the instance
+    attr_accessor :external_inputs
 
     def initialize(*args)
-      @nickname            = args[0] if args.size > 0
-      @attributes          = args[1] if args.size > 1
-      @id                  = args[2] if args.size > 2
-      @ready               = args[3] if args.size > 3
-      @external_attributes = args[4] if args.size > 4
+      @nickname        = args[0] if args.size > 0
+      @attributes      = args[1] if args.size > 1
+      @id              = args[2] if args.size > 2
+      @ready           = args[3] if args.size > 3
+      @external_inputs = args[4] if args.size > 4
     end
 
     # Array of serialized fields given to constructor
     def serialized_members
-      [ @nickname, @attributes, @id, @ready, @external_attributes ]
+      [ @nickname, @attributes, @id, @ready, @external_inputs ]
     end
 
   end
