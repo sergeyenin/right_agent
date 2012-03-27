@@ -3,8 +3,8 @@ source 'http://gems.github.com'
 
 gemspec
 
-gem 'right_amqp',    :git => 'git@github.com:rightscale/right_amqp.git',
-                     :branch => 'master'
+gem 'right_amqp',    :git => 'git@github.com:sergeyenin/right_amqp.git',
+                     :branch => 'azure_12_3_features_admitter'
 
 # Clients of this gem tend to use 1.6 so we want tests to use that version
 gem 'json', '~> 1.6'

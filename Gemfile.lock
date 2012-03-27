@@ -1,11 +1,11 @@
 GIT
-  remote: git@github.com:rightscale/right_amqp.git
-  revision: 42ead718dbd3a377690e90cbd05b6204d37e847f
-  branch: master
+  remote: git@github.com:sergeyenin/right_amqp.git
+  revision: 3fd3ba6dab6eaec3316d447cf6999016df207bd3
+  branch: azure_12_3_features_admitter
   specs:
     right_amqp (0.2.1)
       eventmachine (~> 0.12.10)
-      right_support (~> 1.2)
+      right_support
 
 PATH
   remote: .
@@ -17,7 +17,7 @@ PATH
       net-ssh (~> 2.0)
       right_amqp (~> 0.1)
       right_popen (~> 1.0.11)
-      right_support (~> 1.3)
+      right_support
 
 GEM
   remote: http://rubygems.org/
@@ -42,7 +42,7 @@ GEM
       mime-types (>= 1.16)
     right_popen (1.0.11)
       eventmachine (>= 0.12.10)
-    right_support (1.3.2)
+    right_support (2.0.0)
     rspec (2.6.0)
       rspec-core (~> 2.6.0)
       rspec-expectations (~> 2.6.0)
